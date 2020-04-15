@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -15,9 +16,27 @@ import (
 	"github.com/tarm/serial"
 )
 
+func parseRequiredFlags() (string, int) {
+	serialPort := flag.String("serial", "", "Specifies the serial port in the form /dev/xxx")
+	baudRate := flag.Int("baud", 9600, "Specifies the baud rate of the serial port")
+
+	flag.Parse()
+
+	if len(*serialPort) < 1 {
+		fmt.Println("Serial port not specified")
+		flag.Usage()
+	}
+	if _, err := os.Stat(*serialPort); err != nil {
+		log.Fatal(err)
+	}
+
+	return *serialPort, *baudRate
+}
+
 func main() {
 
-	config := &serial.Config{Name: "/dev/ttyACM0", Baud: 9600}
+	serialPort, baudRate := parseRequiredFlags()
+	config := &serial.Config{Name: serialPort, Baud: baudRate}
 	port, err := serial.OpenPort(config)
 
 	if err != nil {
