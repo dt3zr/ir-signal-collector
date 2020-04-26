@@ -15,27 +15,44 @@ var store = frameStore{frameSet: make(map[frameID][][]markSpacePair)}
 // server to listen on port 8080
 func Start() {
 	http.HandleFunc("/signal", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
+		switch request.Method {
+		case http.MethodPost:
+			payload, err := ioutil.ReadAll(request.Body)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			r := new(signalPublishRequest)
+
+			if err := json.Unmarshal(payload, r); err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			store.add(r.ProtocolName, r.Value, r.Header, r.RawPulses)
+
+		case http.MethodGet:
+			// construct signal list as response
+			r := signalListResponse{}
+			for fid, frameList := range store.frameSet {
+				f := frameMetadata{fid.protocolName, fid.value, len(frameList)}
+				r.Metadata = append(r.Metadata, f)
+			}
+
+			// encode response
+			responseBytes, err := json.Marshal(r)
+			if err != nil {
+				response.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			response.Header().Add("Content-Type", "application/json")
+			response.Write(responseBytes)
+
+		default:
 			response.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
-
-		payload, err := ioutil.ReadAll(request.Body)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		r := new(signalPublishRequest)
-
-		if err := json.Unmarshal(payload, r); err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		store.add(r.ProtocolName, r.Value, r.Header, r.RawPulses)
-		fmt.Println(store)
-
 	})
 
 	http.HandleFunc("/signal/", func(response http.ResponseWriter, request *http.Request) {
