@@ -26,3 +26,15 @@ func (f *frameStore) add(protocolName string, value string, header markSpacePair
 
 	f.frameSet[fid] = append(f.frameSet[fid], mspairWithHeader)
 }
+
+func (f *frameStore) get(protocolName string, value string) ([][]markSpacePair, bool) {
+	fid := frameID{protocolName, value}
+
+	mspList, ok := f.frameSet[fid]
+
+	if !ok {
+		return nil, false
+	}
+
+	return mspList, true
+}
