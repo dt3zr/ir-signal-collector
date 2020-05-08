@@ -48,6 +48,7 @@ func Start() {
 			}
 
 			response.Header().Add("Content-Type", "application/json")
+			response.Header().Add("Access-Control-Allow-Origin", "*")
 			response.Write(responseBytes)
 
 		default:
