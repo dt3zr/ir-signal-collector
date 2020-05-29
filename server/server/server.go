@@ -2,14 +2,13 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
 )
 
-var store = frameStore{frameSet: make(map[frameID][][]markSpacePair)}
+var db = newDatabase()
 
 // Start function sets up the url mapping and launches the HTTP
 // server to listen on port 8080
@@ -17,32 +16,61 @@ func Start() {
 	http.HandleFunc("/signal", func(response http.ResponseWriter, request *http.Request) {
 		switch request.Method {
 		case http.MethodPost:
-			payload, err := ioutil.ReadAll(request.Body)
+			taggedFrameJSON, err := ioutil.ReadAll(request.Body)
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 				return
 			}
-
-			r := new(signalPublishRequest)
-
-			if err := json.Unmarshal(payload, r); err != nil {
-				fmt.Println(err)
+			var theTaggedFrame taggedFrame
+			if err := json.Unmarshal(taggedFrameJSON, &theTaggedFrame); err != nil {
+				log.Println(err)
 				return
 			}
-
-			store.add(r.ProtocolName, r.Value, r.Header, r.RawPulses)
-
+			log.Printf("Unmarshalled -> %+v\n", theTaggedFrame)
+			db.insert(theTaggedFrame)
 		case http.MethodGet:
 			// construct signal list as response
-			r := signalListResponse{}
-			for fid, frameList := range store.frameSet {
-				f := frameMetadata{fid.protocolName, fid.value, len(frameList)}
-				r.Metadata = append(r.Metadata, f)
-			}
-
-			// encode response
-			responseBytes, err := json.Marshal(r)
+			collectorIDList, err := db.getCollectorIDList()
 			if err != nil {
+				log.Println(err)
+				response.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			collector2protocol := make(simpleCollectorProtocolMap)
+			for _, cid := range collectorIDList {
+				protocolIDList, err := db.getProtocolIDList(cid)
+				if err != nil {
+					log.Println(err)
+					response.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				protocol2Value := make(simpleProtocolValueMap)
+				for _, pid := range protocolIDList {
+					values, err := db.getValues(cid, pid)
+					if err != nil {
+						log.Println(err)
+						response.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					l := make(simpleValueLengthList, 0, len(values))
+					for _, value := range values {
+						frames, err := db.getFrameList(cid, pid, value)
+						if err != nil {
+							log.Println(err)
+							response.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						f := simpleValueLength{value, len(frames)}
+						l = append(l, f)
+					}
+					protocol2Value[pid.String()] = l
+				}
+				collector2protocol[cid] = protocol2Value
+			}
+			// encode response
+			responseBytes, err := json.Marshal(collector2protocol)
+			if err != nil {
+				log.Print(err)
 				response.WriteHeader(http.StatusInternalServerError)
 				return
 			}
@@ -56,45 +84,92 @@ func Start() {
 		}
 	})
 
+	// URL patterns: [
+	//   /signal/collectorID
+	//   /signal/collectorID/protocolID
+	//	 /signal/collectorID/protocolID/value
+	// ]
 	http.HandleFunc("/signal/", func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			response.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-
-		// parse the URL for protocol name and value
-		valuePath := strings.TrimPrefix(request.URL.Path, "/signal/")
-		values := strings.Split(valuePath, "/")
-
-		if len(values) != 2 || len(values[0]) == 0 || len(values[1]) == 0 {
+		// parse the URL for collector id, protocol id, value
+		urlPath := strings.TrimPrefix(request.URL.Path, "/signal/")
+		var collectorID, pid, value string
+		stringPtr := []interface{}{&collectorID, &pid, &value}
+		stringCount := 0
+		for _, sp := range stringPtr {
+			pos := strings.Index(urlPath, "/")
+			if pos < 0 {
+				if len(urlPath) > 0 {
+					s := sp.(*string)
+					*s = urlPath[:]
+					stringCount++
+				}
+				break
+			}
+			s := sp.(*string)
+			*s = urlPath[:pos]
+			stringCount++
+			urlPath = urlPath[(pos + 1):]
+		}
+		if stringCount < 1 {
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
-
-		// obtain frames from frame store
-		mspairList, ok := store.get(values[0], values[1])
-		if !ok {
-			response.WriteHeader(http.StatusNotFound)
-			return
+		var output []byte
+		switch stringCount {
+		case 1:
+			if collectorID != "" {
+				protocolIDList, err := db.getProtocolIDList(collectorID)
+				if err != nil {
+					log.Print(err)
+					response.WriteHeader(http.StatusNotFound)
+					return
+				}
+				output, err = json.Marshal(protocolIDList)
+				if err != nil {
+					log.Print(err)
+					response.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
+		case 2:
+			if collectorID != "" && pid != "" {
+				var p protocolID
+				p.parse(pid)
+				values, err := db.getValues(collectorID, p)
+				if err != nil {
+					response.WriteHeader(http.StatusNotFound)
+					return
+				}
+				output, err = json.Marshal(values)
+				if err != nil {
+					log.Print(err)
+					response.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
+		case 3:
+			if collectorID != "" && pid != "" && value != "" {
+				var p protocolID
+				p.parse(pid)
+				frames, err := db.getFrameList(collectorID, p, value)
+				if err != nil {
+					log.Print(err)
+					response.WriteHeader(http.StatusNotFound)
+					return
+				}
+				output, err = json.Marshal(frames)
+				if err != nil {
+					log.Print(err)
+					response.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
 		}
-
-		// construct frames from flattened frames
-		frames := make([]frame, 0)
-		for _, pair := range mspairList {
-			head := markSpacePair{pair[0].Mark, pair[0].Space}
-			f := frame{head, pair[2:]}
-			frames = append(frames, f)
-		}
-
-		// encoding response
-		r := signalQueryResponse{values[0], values[1], frames}
-		responseString, err := json.Marshal(r)
-		if err != nil {
-			response.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		response.Write(responseString)
+		response.Write(output)
 	})
 
 	signalCollectorServer := http.Server{Addr: "localhost:8080"}
