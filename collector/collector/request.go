@@ -12,6 +12,6 @@ type signalPublishRequest struct {
 
 // markSpacePair represents each bit for the frame
 type markSpacePair struct {
-	Mark  float64 `json:"mark"`
-	Space float64 `json:"space"`
+	Mark  int `json:"mark"`
+	Space int `json:"space"`
 }

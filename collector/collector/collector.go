@@ -2,16 +2,15 @@ package collector
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/csv"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 
 	"github.com/tarm/serial"
 )
@@ -33,6 +32,84 @@ func parseRequiredFlags() (string, int) {
 	return *serialPort, *baudRate
 }
 
+const (
+	pNECHeaderMarkMicros float64 = 9000
+	pNECBitShortMicros   float64 = 562.5
+	pNECBitLongMicros    float64 = 1687.5
+)
+
+type irBit []int
+
+type irFrameData struct {
+	Resolution int     `json:"resolution"`
+	Data       []irBit `json:"data"`
+}
+
+func matchNECProtocol(h markSpacePair) bool {
+	return (float64(h.Mark) > pNECHeaderMarkMicros*0.90) && (float64(h.Mark) < pNECHeaderMarkMicros*1.1)
+}
+
+func (f *irFrameData) getProtocol() string {
+	if matchNECProtocol(f.getHeader()) {
+		return "NEC"
+	}
+	return "Unknown"
+}
+
+func (f *irFrameData) getPulseLength() int {
+	return len(f.Data[1:])
+}
+
+func (f *irFrameData) getRawPulses() []markSpacePair {
+	pulses := f.Data[1:]
+	pair := make([]markSpacePair, len(pulses))
+
+	for i, p := range pulses {
+		pair[i].Mark = p[0] * f.Resolution
+		pair[i].Space = p[1] * f.Resolution
+	}
+
+	return pair
+}
+
+func (f *irFrameData) getHeader() markSpacePair {
+	return markSpacePair{
+		f.Data[0][0] * f.Resolution,
+		f.Data[0][1] * f.Resolution,
+	}
+}
+
+func matchNECShort(microTime int) bool {
+	return (float64(microTime) > pNECBitShortMicros*0.90) && (float64(microTime) < pNECBitShortMicros*1.1)
+}
+
+func matchNECLong(microTime int) bool {
+	return (float64(microTime) > pNECBitLongMicros*0.90) && (float64(microTime) < pNECBitLongMicros*1.1)
+}
+
+func (f *irFrameData) getDecodedValue() (string, error) {
+	var decodedValue uint32 = 0
+	pulses := f.Data[1:33]
+
+	for i, p := range pulses {
+		markMicroTime := p[0] * f.Resolution
+		spaceMicroTime := p[1] * f.Resolution
+
+		isMarkShort := matchNECShort(markMicroTime)
+		isSpaceShort := matchNECShort(spaceMicroTime)
+		isSpaceLong := matchNECLong(spaceMicroTime)
+
+		if isMarkShort && isSpaceLong {
+			decodedValue = decodedValue + uint32(math.Pow(float64(2), float64(31-i)))
+		} else if isMarkShort && !isSpaceShort {
+			return "", errors.New("Error decoding value")
+		}
+	}
+
+	return fmt.Sprintf("%08X", decodedValue), nil
+
+}
+
 // Start launches the collector
 func Start() {
 
@@ -46,10 +123,6 @@ func Start() {
 
 	lineScanner := bufio.NewScanner(io.Reader(port))
 
-	headers := make([]string, 0)
-	records := make([][]string, 0)
-	fields := make([]string, 0)
-
 	go func() {
 		signalChannel := make(chan os.Signal)
 		signal.Notify(signalChannel, os.Interrupt)
@@ -58,159 +131,32 @@ func Start() {
 
 		<-signalChannel
 
-		fmt.Println("Saving data")
-
-		file, err := os.Create("output.csv")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		outputWriter := csv.NewWriter(file)
-		err = outputWriter.Write(headers)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		err = outputWriter.WriteAll(records)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		outputWriter.Flush()
-		file.Close()
 		port.Close()
 		os.Exit(0)
 	}()
 
-	headersCreated := false
-	messageHeaderSent := false
-	var frameRequest signalPublishRequest
-
 	for lineScanner.Scan() {
 
-		line := lineScanner.Text()
-		fmt.Println(line)
+		line := lineScanner.Bytes()
+		fmt.Println(string(line))
 
-		if strings.HasPrefix(line, "Decoded") {
+		var data irFrameData
+		if err := json.Unmarshal(line, &data); err != nil {
+			fmt.Println(err)
+		}
 
-			frameRequest = signalPublishRequest{}
+		// packaging irFrameData into signalPublishRequest
+		var request signalPublishRequest
+		request.ProtocolName = data.getProtocol()
+		request.FrameSize = data.getPulseLength()
+		request.Value, err = data.getDecodedValue()
+		request.Header = data.getHeader()
+		request.RawPulses = data.getRawPulses()
 
-			valueScanner := bufio.NewScanner(strings.NewReader(line))
-			valueScanner.Split(bufio.ScanWords)
-			for valueScanner.Scan() {
-				token := valueScanner.Text()
-
-				if strings.HasSuffix(token, ":") {
-
-					protocolName := strings.TrimRight(token, ":")
-					fields = append(fields, protocolName)
-					frameRequest.ProtocolName = protocolName
-
-					if !headersCreated {
-						headers = append(headers, "protocol")
-					}
-
-				} else if strings.HasPrefix(token, "Value") {
-
-					dataValues := strings.Split(token, ":")
-					fields = append(fields, dataValues[1])
-					frameRequest.Value = dataValues[1]
-
-					if !headersCreated {
-						headers = append(headers, "value")
-					}
-
-				} else if strings.HasPrefix(token, "(") {
-
-					frameSize := strings.TrimLeft(token, "(")
-					fields = append(fields, frameSize)
-					if frameRequest.FrameSize, err = strconv.Atoi(frameSize); err != nil {
-						frameRequest.FrameSize = -1
-					}
-
-					if !headersCreated {
-						headers = append(headers, "framesize")
-					}
-				}
-			}
-			messageHeaderSent = true
-
-		} else if strings.Contains(line, "Head") {
-
-			leftTrimmedLine := strings.TrimLeft(line, " \t")
-			token := strings.Split(leftTrimmedLine, " ")
-
-			fields = append(fields, strings.TrimLeft(token[1], "m"))
-			fields = append(fields, strings.TrimLeft(token[3], "s"))
-			if frameRequest.Header.Mark, err = strconv.ParseFloat(fields[len(fields)-2], 64); err != nil {
-				frameRequest.Header.Mark = -1.0
-			}
-			if frameRequest.Header.Space, err = strconv.ParseFloat(fields[len(fields)-1], 64); err != nil {
-				frameRequest.Header.Space = -1.0
-			}
-
-			if !headersCreated {
-				headers = append(headers, "hm")
-				headers = append(headers, "hs")
-			}
-
-		} else if messageHeaderSent && (strings.HasPrefix(line, "0:") ||
-			strings.HasPrefix(line, "4:") ||
-			strings.HasPrefix(line, "8:") ||
-			strings.HasPrefix(line, "12:") ||
-			strings.HasPrefix(line, "16:") ||
-			strings.HasPrefix(line, "20:") ||
-			strings.HasPrefix(line, "24:") ||
-			strings.HasPrefix(line, "28:")) {
-
-			valueScanner := bufio.NewScanner(strings.NewReader(line))
-
-			valueScanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-				trimmedData := bytes.TrimLeft(data, " \t")
-				sepIndex := bytes.IndexAny(trimmedData, ":\t")
-				if sepIndex > -1 {
-					return sepIndex + 1 + (len(data) - len(trimmedData)), trimmedData[:sepIndex], nil
-				}
-				return 0, nil, nil
-			})
-
-			for valueScanner.Scan() {
-				token := valueScanner.Text()
-				token = strings.TrimSpace(token)
-				if _, err := strconv.ParseInt(token, 10, 64); err == nil {
-					if !headersCreated {
-						headers = append(headers, strings.Join([]string{token, "m"}, ""))
-						headers = append(headers, strings.Join([]string{token, "s"}, ""))
-					}
-				} else {
-					timingTokens := strings.Split(token, " ")
-					fields = append(fields, strings.TrimLeft(timingTokens[0], "ms"))
-					fields = append(fields, strings.TrimLeft(timingTokens[1], "ms"))
-					markSpace := markSpacePair{}
-					if markSpace.Mark, err = strconv.ParseFloat(fields[len(fields)-2], 64); err != nil {
-						markSpace.Mark = -1.0
-					}
-					if markSpace.Space, err = strconv.ParseFloat(fields[len(fields)-1], 64); err != nil {
-						markSpace.Space = -1.0
-					}
-					frameRequest.RawPulses = append(frameRequest.RawPulses, markSpace)
-				}
-			}
-
-			if strings.HasPrefix(line, "28:") {
-				records = append(records, fields)
-				fields = make([]string, 0)
-
-			}
-
-		} else if strings.HasPrefix(line, "Space") {
-			headersCreated = true
-			messageHeaderSent = false
-			fmt.Println("Recorded", len(records), "frames")
-			fmt.Println(frameRequest)
-			go publish(frameRequest)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			go publish(request)
 		}
 
 	}
