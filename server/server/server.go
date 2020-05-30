@@ -1,11 +1,20 @@
 package server
 
 import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"time"
+
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 )
 
 var db = newDatabase()
@@ -172,8 +181,62 @@ func Start() {
 		response.Write(output)
 	})
 
-	signalCollectorServer := http.Server{Addr: "localhost:8080"}
+	http.HandleFunc("/signal/stream", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*.golang.org"}})
+		c, err := websocket.Accept(w, r, nil)
+		log.Printf("Accepted websocket request from %s", r.RemoteAddr)
+		defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
+		defer c.Close(websocket.StatusNormalClosure, "")
+		if err != nil {
+			log.Print(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var (
+			ctx    context.Context
+			cancel context.CancelFunc
+		)
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+		var v interface{} = db
+		notifier := v.(frameNotifier)
+		onNewFrame := notifier.notify(getSubscriberID(r.RemoteAddr))
+		timer := time.NewTimer(15 * time.Minute)
+		timeUp := false
+		for !timeUp {
+			select {
+			case f := <-onNewFrame:
+				if err = wsjson.Write(ctx, c, f); err != nil {
+					log.Print(err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			case <-timer.C:
+				timeUp = true
+			}
+		}
+	}))
+
+	signalCollectorServer := http.Server{Addr: ":8080"}
+	signalCollectorServer.RegisterOnShutdown(func() {
+		log.Print("Shutting down server")
+	})
+	go func() {
+		intr := make(chan os.Signal)
+		signal.Notify(intr, os.Interrupt)
+		<-intr
+		signalCollectorServer.Shutdown(context.Background())
+	}()
+	log.Print("Server started")
 	if err := signalCollectorServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func getSubscriberID(data string) string {
+	h := sha1.Sum([]byte(data))
+	b := make([]byte, 0, 20)
+	for _, v := range h {
+		b = append(b, v)
+	}
+	return hex.EncodeToString(b)
 }

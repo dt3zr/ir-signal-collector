@@ -5,12 +5,20 @@ import (
 	"log"
 )
 
+type frameListener struct {
+	subscriber   string
+	newFrameChan chan newFrameEvent
+}
+
 type rawPulse []int
 type rawPulses []rawPulse
 type frameList []rawPulses
 type valuePulseListMap map[string]frameList
 type protocolValueMap map[protocolID]valuePulseListMap
-type frameDatabase map[string]protocolValueMap
+type frameDatabase struct {
+	store     map[string]protocolValueMap
+	listeners []frameListener
+}
 
 type frameCRUD interface {
 	insert(pTaggedFrame taggedFrame) error
@@ -20,9 +28,18 @@ type frameCRUD interface {
 	getFrameList(pCollectorID string, pProtocolID protocolID, value string) (frameList, error)
 }
 
+type frameNotifier interface {
+	notify(subscriber string) <-chan newFrameEvent
+}
+
 func newDatabase() frameCRUD {
-	db := make(frameDatabase)
+	db := frameDatabase{make(map[string]protocolValueMap), nil}
 	return &db
+}
+
+func (db *frameDatabase) notify(subscriber string) <-chan newFrameEvent {
+	db.listeners = append(db.listeners, frameListener{subscriber, make(chan newFrameEvent)})
+	return db.listeners[len(db.listeners)-1].newFrameChan
 }
 
 func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
@@ -30,7 +47,7 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 	if err != nil {
 		return err
 	}
-	dbase := *db
+	dbase := db.store
 	protocol2Value, collectorIDOk := dbase[pTaggedFrame.CollectorID]
 	if !collectorIDOk {
 		log.Printf("Collector ID '%s' not found. Creating new entry.", pTaggedFrame.CollectorID)
@@ -59,11 +76,17 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 	frames = append(frames, pulses)
 	value2FrameList[value] = frames
 	log.Printf("%s > %s > %s now has %d items", pTaggedFrame.CollectorID, protocol, value, len(value2FrameList[value]))
+	notif := newFrameEvent{pTaggedFrame.CollectorID, protocol.String(), value, pulses}
+	if db.listeners != nil {
+		for _, l := range db.listeners {
+			l.newFrameChan <- notif
+		}
+	}
 	return nil
 }
 
 func (db *frameDatabase) getCollectorIDList() ([]string, error) {
-	dbase := *db
+	dbase := db.store
 	collectorIDList := make([]string, 0, len(dbase))
 	for cid := range dbase {
 		collectorIDList = append(collectorIDList, cid)
@@ -72,7 +95,7 @@ func (db *frameDatabase) getCollectorIDList() ([]string, error) {
 }
 
 func (db *frameDatabase) getProtocolIDList(pCollectorID string) ([]protocolID, error) {
-	dbase := *db
+	dbase := db.store
 	protocol2Value, collectorIDOk := dbase[pCollectorID]
 	if !collectorIDOk {
 		return nil, fmt.Errorf("Collector ID '%s' cannot be found", pCollectorID)
@@ -85,7 +108,7 @@ func (db *frameDatabase) getProtocolIDList(pCollectorID string) ([]protocolID, e
 }
 
 func (db *frameDatabase) getValues(pCollectorID string, pProtocolID protocolID) ([]string, error) {
-	dbase := *db
+	dbase := db.store
 	protocol2Value, collectorIDOk := dbase[pCollectorID]
 	if !collectorIDOk {
 		return nil, fmt.Errorf("Collector ID '%s' cannot be found", pCollectorID)
@@ -102,7 +125,7 @@ func (db *frameDatabase) getValues(pCollectorID string, pProtocolID protocolID) 
 }
 
 func (db *frameDatabase) getFrameList(pCollectorID string, pProtocolID protocolID, value string) (frameList, error) {
-	dbase := *db
+	dbase := db.store
 	protocol2Value, collectorIDOk := dbase[pCollectorID]
 	if !collectorIDOk {
 		return nil, fmt.Errorf("Collector ID '%s' cannot be found", pCollectorID)
