@@ -11,10 +11,10 @@ type frameListener struct {
 }
 
 type rawPulse []int
-type rawPulses []rawPulse
-type frameList []rawPulses
-type valuePulseListMap map[string]frameList
-type protocolValueMap map[protocolID]valuePulseListMap
+type frame []rawPulse
+type frameList []frame
+type valueFrameListMap map[string]frameList
+type protocolValueMap map[protocolID]valueFrameListMap
 type frameDatabase struct {
 	store     map[string]protocolValueMap
 	listeners []frameListener
@@ -57,7 +57,7 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 	value2FrameList, protocolIDOk := protocol2Value[protocol]
 	if !protocolIDOk {
 		log.Printf("Protocol ID '%s' not found. Creating new entry.", protocol)
-		protocol2Value[protocol] = make(valuePulseListMap)
+		protocol2Value[protocol] = make(valueFrameListMap)
 		value2FrameList = protocol2Value[protocol]
 	}
 	frames, valueOk := value2FrameList[value]
@@ -67,7 +67,7 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 		frames = value2FrameList[value]
 	}
 	log.Printf("Inserting %+v.", pTaggedFrame.Frame.Data)
-	pulses := make(rawPulses, len(pTaggedFrame.Frame.Data))
+	pulses := make(frame, len(pTaggedFrame.Frame.Data))
 	for i, d := range pTaggedFrame.Frame.Data {
 		pulses[i] = make(rawPulse, 2)
 		pulses[i][0] = d[0] * pTaggedFrame.Frame.Resolution

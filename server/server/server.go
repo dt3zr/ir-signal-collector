@@ -13,9 +13,9 @@ var db = newDatabase()
 // Start function sets up the url mapping and launches the HTTP
 // server to listen on port 8080
 func Start() {
-	http.HandleFunc("/signal", frameSimpleQueryHandler)
-	http.HandleFunc("/signal/", frameQueryHandler)
-	http.HandleFunc("/signal/stream", frameStreamHandler)
+	http.HandleFunc("/ir/stream", frameStreamHandler)
+	http.HandleFunc("/ir/collector", collectorQueryHandler)
+	http.HandleFunc("/ir/frame", frameQueryHandler)
 
 	signalCollectorServer := http.Server{Addr: ":8080"}
 	signalCollectorServer.RegisterOnShutdown(func() {
