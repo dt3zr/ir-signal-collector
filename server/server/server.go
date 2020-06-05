@@ -8,6 +8,8 @@ import (
 	"os/signal"
 )
 
+var debugMode = false
+
 var db = newDatabase()
 
 // Start function sets up the url mapping and launches the HTTP

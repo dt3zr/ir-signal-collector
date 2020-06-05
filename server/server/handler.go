@@ -70,15 +70,17 @@ func frameQueryHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		taggedFrameJSON, err := ioutil.ReadAll(r.Body)
 		if err != nil {
-			log.Println(err)
+			log.Println("Error reading from request body.", err)
 			return
 		}
 		var theTaggedFrame taggedFrame
 		if err := json.Unmarshal(taggedFrameJSON, &theTaggedFrame); err != nil {
-			log.Println(err)
+			log.Println("Error unmarshaling.", err)
 			return
 		}
-		log.Printf("Unmarshalled -> %+v\n", theTaggedFrame)
+		if debugMode {
+			log.Printf("Unmarshalled -> %+v\n", theTaggedFrame)
+		}
 		db.insert(theTaggedFrame)
 	case http.MethodGet:
 		var collectorIDList []string

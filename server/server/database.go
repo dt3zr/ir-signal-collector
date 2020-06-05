@@ -50,23 +50,31 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 	dbase := db.store
 	protocol2Value, collectorIDOk := dbase[pTaggedFrame.CollectorID]
 	if !collectorIDOk {
-		log.Printf("Collector ID '%s' not found. Creating new entry.", pTaggedFrame.CollectorID)
+		if debugMode {
+			log.Printf("Collector ID '%s' not found. Creating new entry.", pTaggedFrame.CollectorID)
+		}
 		dbase[pTaggedFrame.CollectorID] = make(protocolValueMap)
 		protocol2Value = dbase[pTaggedFrame.CollectorID]
 	}
 	value2FrameList, protocolIDOk := protocol2Value[protocol]
 	if !protocolIDOk {
-		log.Printf("Protocol ID '%s' not found. Creating new entry.", protocol)
+		if debugMode {
+			log.Printf("Protocol ID '%s' not found. Creating new entry.", protocol)
+		}
 		protocol2Value[protocol] = make(valueFrameListMap)
 		value2FrameList = protocol2Value[protocol]
 	}
 	frames, valueOk := value2FrameList[value]
 	if !valueOk {
-		log.Printf("Frame value '%s' not found. Creating new entry.", value)
+		if debugMode {
+			log.Printf("Frame value '%s' not found. Creating new entry.", value)
+		}
 		value2FrameList[value] = make(frameList, 0, 1)
 		frames = value2FrameList[value]
 	}
-	log.Printf("Inserting %+v.", pTaggedFrame.Frame.Data)
+	if debugMode {
+		log.Printf("Inserting %+v.", pTaggedFrame.Frame.Data)
+	}
 	pulses := make(frame, len(pTaggedFrame.Frame.Data))
 	for i, d := range pTaggedFrame.Frame.Data {
 		pulses[i] = make(rawPulse, 2)
@@ -75,7 +83,9 @@ func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {
 	}
 	frames = append(frames, pulses)
 	value2FrameList[value] = frames
-	log.Printf("%s > %s > %s now has %d items", pTaggedFrame.CollectorID, protocol, value, len(value2FrameList[value]))
+	if debugMode {
+		log.Printf("%s > %s > %s now has %d items", pTaggedFrame.CollectorID, protocol, value, len(value2FrameList[value]))
+	}
 	notif := newFrameEvent{pTaggedFrame.CollectorID, protocol.String(), value, pulses}
 	if db.listeners != nil {
 		for _, l := range db.listeners {
