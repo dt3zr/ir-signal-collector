@@ -30,6 +30,7 @@ type frameCRUD interface {
 
 type frameNotifier interface {
 	notify(subscriber string) (<-chan newFrameEvent, error)
+	unNotify(subscriber string) error
 }
 
 func newDatabase() frameCRUD {
@@ -45,6 +46,22 @@ func (db *frameDatabase) notify(subscriber string) (<-chan newFrameEvent, error)
 	}
 	db.listeners = append(db.listeners, frameListener{subscriber, make(chan newFrameEvent)})
 	return db.listeners[len(db.listeners)-1].newFrameChan, nil
+}
+
+func (db *frameDatabase) unNotify(subscriber string) error {
+	l := -1
+	for i := range db.listeners {
+		if db.listeners[i].subscriber == subscriber {
+			l = i
+			break
+		}
+	}
+	if l > -1 {
+		close(db.listeners[l].newFrameChan)
+		db.listeners = append(db.listeners[:l], db.listeners[(l+1):]...)
+		return nil
+	}
+	return fmt.Errorf("Subscriber '%s' cannot be found for unnotification", subscriber)
 }
 
 func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {

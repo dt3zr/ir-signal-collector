@@ -16,15 +16,15 @@ import (
 )
 
 func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"localhost:*"}})
-	log.Printf("Accepted websocket request from %s", r.RemoteAddr)
-	defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
-	defer c.Close(websocket.StatusNormalClosure, "")
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"localhost:*", "192.168.*.*:*"}})
 	if err != nil {
 		log.Print(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Accepted websocket request from %s", r.RemoteAddr)
+	defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
+	defer c.Close(websocket.StatusNormalClosure, "Handler exits")
 	var (
 		ctx    context.Context
 		cancel context.CancelFunc
@@ -43,7 +43,7 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusNormalClosure, "Already subscribed")
 		return
 	}
-	timer := time.NewTimer(15 * time.Minute)
+	timer := time.NewTimer(1 * time.Minute)
 	for {
 		select {
 		case f := <-onNewFrame:
@@ -52,6 +52,16 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 		case <-timer.C:
+			db = <-dbLock
+			v = db
+			notifier = v.(frameNotifier)
+			err = notifier.unNotify(getSubscriberID(r.RemoteAddr))
+			if err != nil {
+				if debugMode {
+					log.Print(err)
+				}
+			}
+			dbUnlock <- db
 			return
 		}
 	}
