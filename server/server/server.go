@@ -8,7 +8,7 @@ import (
 	"os/signal"
 )
 
-var debugMode = false
+var debugMode = true
 
 var dbLock <-chan frameCRUD
 var dbUnlock chan<- frameCRUD

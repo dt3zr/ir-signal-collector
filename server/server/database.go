@@ -29,7 +29,7 @@ type frameCRUD interface {
 }
 
 type frameNotifier interface {
-	notify(subscriber string) <-chan newFrameEvent
+	notify(subscriber string) (<-chan newFrameEvent, error)
 }
 
 func newDatabase() frameCRUD {
@@ -37,9 +37,14 @@ func newDatabase() frameCRUD {
 	return &db
 }
 
-func (db *frameDatabase) notify(subscriber string) <-chan newFrameEvent {
+func (db *frameDatabase) notify(subscriber string) (<-chan newFrameEvent, error) {
+	for _, listener := range db.listeners {
+		if listener.subscriber == subscriber {
+			return nil, fmt.Errorf("Subscriber '%s' already have a subscription", subscriber)
+		}
+	}
 	db.listeners = append(db.listeners, frameListener{subscriber, make(chan newFrameEvent)})
-	return db.listeners[len(db.listeners)-1].newFrameChan
+	return db.listeners[len(db.listeners)-1].newFrameChan, nil
 }
 
 func (db *frameDatabase) insert(pTaggedFrame taggedFrame) error {

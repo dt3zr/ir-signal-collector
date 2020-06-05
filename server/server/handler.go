@@ -16,8 +16,6 @@ import (
 )
 
 func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
-	db := <-dbLock
-	defer func() { dbUnlock <- db }()
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"localhost:*"}})
 	log.Printf("Accepted websocket request from %s", r.RemoteAddr)
 	defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
@@ -33,12 +31,20 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
+	db := <-dbLock
 	var v interface{} = db
 	notifier := v.(frameNotifier)
-	onNewFrame := notifier.notify(getSubscriberID(r.RemoteAddr))
+	onNewFrame, err := notifier.notify(getSubscriberID(r.RemoteAddr))
+	dbUnlock <- db
+	if err != nil {
+		if debugMode {
+			log.Print(err)
+		}
+		c.Close(websocket.StatusNormalClosure, "Already subscribed")
+		return
+	}
 	timer := time.NewTimer(15 * time.Minute)
-	timeUp := false
-	for !timeUp {
+	for {
 		select {
 		case f := <-onNewFrame:
 			if err = wsjson.Write(ctx, c, f); err != nil {
@@ -46,7 +52,7 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 		case <-timer.C:
-			timeUp = true
+			return
 		}
 	}
 }
