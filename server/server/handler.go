@@ -16,6 +16,8 @@ import (
 )
 
 func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
+	db := <-dbLock
+	defer func() { dbUnlock <- db }()
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"localhost:*"}})
 	log.Printf("Accepted websocket request from %s", r.RemoteAddr)
 	defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
@@ -50,6 +52,8 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func collectorQueryHandler(w http.ResponseWriter, r *http.Request) {
+	db := <-dbLock
+	defer func() { dbUnlock <- db }()
 	collectorIDList, err := db.getCollectorIDList()
 	if err != nil {
 		log.Print(err)
@@ -66,6 +70,8 @@ func collectorQueryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func frameQueryHandler(w http.ResponseWriter, r *http.Request) {
+	db := <-dbLock
+	defer func() { dbUnlock <- db }()
 	switch r.Method {
 	case http.MethodPost:
 		taggedFrameJSON, err := ioutil.ReadAll(r.Body)
