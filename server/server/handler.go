@@ -3,12 +3,13 @@ package server
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -25,11 +26,7 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Accepted websocket request from %s", r.RemoteAddr)
 	defer log.Printf("Closing websocket connection for %s", r.RemoteAddr)
 	defer c.Close(websocket.StatusNormalClosure, "Handler exits")
-	var (
-		ctx    context.Context
-		cancel context.CancelFunc
-	)
-	ctx, cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	db := <-dbLock
 	var v interface{} = db
@@ -43,25 +40,28 @@ func frameStreamHandler(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusNormalClosure, "Already subscribed")
 		return
 	}
-	timer := time.NewTimer(1 * time.Minute)
+	defer func() {
+		db = <-dbLock
+		v = db
+		notifier = v.(frameNotifier)
+		err = notifier.unNotify(getSubscriberID(r.RemoteAddr))
+		if err != nil {
+			if debugMode {
+				log.Print(err)
+			}
+		}
+		dbUnlock <- db
+	}()
+	ctx = c.CloseRead(ctx)
 	for {
 		select {
 		case f := <-onNewFrame:
-			if err = wsjson.Write(ctx, c, f); err != nil {
+			if err = writeFrame(ctx, c, f); err != nil {
 				log.Print(err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
-		case <-timer.C:
-			db = <-dbLock
-			v = db
-			notifier = v.(frameNotifier)
-			err = notifier.unNotify(getSubscriberID(r.RemoteAddr))
-			if err != nil {
-				if debugMode {
-					log.Print(err)
-				}
-			}
-			dbUnlock <- db
+		case <-ctx.Done():
+			log.Print(ctx.Err())
 			return
 		}
 	}
@@ -167,31 +167,21 @@ func frameQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 func getSubscriberID(data string) string {
 	h := sha1.Sum([]byte(data))
-	b := make([]byte, 0, 20)
-	for _, v := range h {
-		b = append(b, v)
-	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(h[:])
 }
 
-func scanURLParam(prefix, path string, out ...*string) int {
-	if !strings.HasSuffix(prefix, "/") {
-		prefix = strings.Join([]string{prefix, "/"}, "")
+func generateSessionID() string {
+	b, _ := time.Now().MarshalBinary()
+	s256 := sha256.Sum256(b)
+	return fmt.Sprintf("%X", s256)
+}
+
+func writeFrame(ctx context.Context, c *websocket.Conn, f newFrameEvent) error {
+	ctx, cancelFunc := context.WithTimeout(ctx, 1*time.Second)
+	defer cancelFunc()
+
+	if err := wsjson.Write(ctx, c, f); err != nil {
+		return err
 	}
-	urlPath := strings.TrimPrefix(path, prefix)
-	n := 0
-	for _, sp := range out {
-		pos := strings.Index(urlPath, "/")
-		if pos < 0 {
-			if len(urlPath) > 0 {
-				*sp = urlPath[:]
-				n++
-			}
-			break
-		}
-		*sp = urlPath[:pos]
-		n++
-		urlPath = urlPath[(pos + 1):]
-	}
-	return n
+	return nil
 }
